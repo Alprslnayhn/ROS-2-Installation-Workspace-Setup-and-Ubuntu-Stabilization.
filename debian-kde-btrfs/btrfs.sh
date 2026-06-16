@@ -1,5 +1,6 @@
 #!/bin/sh
 
+set -e
 
 confirm_and_continue() {
     echo "--------------------------------------------------"
@@ -21,13 +22,21 @@ confirm_and_continue() {
 }
 
 
+echo "----------------------------------------"
+echo "Please run 'sudo su' before starting this script."
+echo "----------------------------------------"
 
+echo Cleaning disk...
 
-sudo su
+sudo dd if=/dev/zero of=/dev/nvme0n1 bs=512 count=2048 status=progress
+sudo partprobe /dev/nvme0n1
+
 
 lsblk -p
 
 export DISK="/dev/nvme0n1"
+
+echo $DISK
 
 apt update && apt install gdisk -y
 
@@ -38,25 +47,34 @@ confirm_and_continue
 
 
 
+echo "1. Wiping and initializing the disk..."
+# Wipe existing filesystem signatures from the disk
+wipefs -a "$DISK"
+# Zap (destroy) GPT/MBR data structures
+sgdisk -Z "$DISK"
+# Create a fresh, empty GPT partition table
+sgdisk -o "$DISK"
 
-# Wipe the disk and create a fresh GPT layout
-sgdisk -Z $DISK
-sgdisk -og $DISK
+echo "2. Creating partitions..."
+# Create 1 GiB EFI System Partition (1:ESP)
+sgdisk -n 1::+1G -t 1:ef00 -c 1:'ESP' "$DISK"
+# Create Root Partition using the remaining disk space (2:LINUX)
+sgdisk -n 2::0 -t 2:8300 -c 2:'LINUX' "$DISK"
 
-# Create EFI system partition (1 GiB)
-sgdisk -n 1::+1G -t 1:ef00 -c 1:'ESP' $DISK
+# Inform the OS kernel of partition table changes
+partprobe "$DISK"
+sleep 1
 
-# Create root partition (rest of the disk)
-sgdisk -n 2:: -t 2:8300 -c 2:'LINUX' $DISK
+echo "3. Formatting EFI partition with FAT32..."
+# Partition naming for NVMe uses 'p1', while standard disks use '1'
+mkfs.fat -F32 -n EFI "${DISK}p1"
 
-# Format the EFI partition with FAT32 filesystem
-mkfs.fat -F32 -n EFI ${DISK}p1
+echo "4. Formatting root partition with Btrfs..."
+# Use -f (force) to overwrite any existing filesystem signatures without prompting
+mkfs.btrfs -f -L DEBIAN "${DISK}p2"
 
-# Format the main partition with Btrfs filesystem
-mkfs.btrfs -L DEBIAN ${DISK}p2
-
-# Verify the filesystem formats
-lsblk -po name,size,fstype,fsver,label,uuid $DISK
+echo "5. Verifying the block device structure..."
+lsblk -po name,size,fstype,fsver,label,uuid "$DISK"
 
 
 
